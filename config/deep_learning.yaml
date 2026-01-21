@@ -1,0 +1,240 @@
+# 深度学习选股系统配置
+# 独立配置文件，不影响现有 config.yaml
+
+# ===================== 基础设置 =====================
+device: auto  # auto / cuda / cpu
+seed: 42
+use_amp: true  # 混合精度训练
+
+# ===================== N2修复: 关键配置从 config.yaml 继承 =====================
+# 以下段设为 null，由 load_merged_config() 从 config.yaml 继承
+# 确保深度学习/RL训练与基线回测使用相同的口径
+execution: null     # 从 config.yaml 继承: trade_at_close, execution_price, purge_safety_buffer 等
+stock_pool: null    # 从 config.yaml 继承: min_list_days, min_avg_amount 等
+data_fetch: null    # 从 config.yaml 继承: adjust 等
+liquidity: null     # 从 config.yaml 继承: min_amount_threshold 等
+backtest: null      # 从 config.yaml 继承: commission, slippage, max_position 等
+
+# 如需覆盖特定参数，取消注释并修改:
+# execution:
+#   purge_safety_buffer: 1  # 深度学习可能需要更小的隔离期
+
+# ===================== 数据设置 =====================
+data:
+  start_date: "20200101"
+  end_date: null  # null 表示到当前日期
+  factor_cache_dir: "data/processed/factors"
+  sequence_cache_dir: "data/processed/factor_seq"
+
+# ===================== 序列模型设置 (Phase 1) =====================
+sequence:
+  seq_len: 20             # 序列长度（因子日期数，非交易日）
+  stride: 1               # 滑动步长
+  batch_size: 256
+  use_amp: true
+
+  # 柔性序列配置（支持非连续因子数据）
+  continuity_mode: flexible   # strict: 要求连续 / flexible: 允许间隔 / adaptive: 自适应
+  min_coverage: 0.8           # 最小数据覆盖率 (0-1)
+  add_time_gap_feature: true  # 添加时间间隔特征
+  max_lookback_multiplier: 2.0  # 最大回看倍数
+
+# Transformer 配置
+transformer:
+  d_model: 128          # 模型维度
+  nhead: 8              # 注意力头数
+  num_layers: 4         # 编码器层数
+  dim_feedforward: 512  # FFN 隐藏层维度
+  dropout: 0.1
+  max_len: 200          # 最大序列长度
+
+# LSTM 配置
+lstm:
+  hidden_dim: 128       # 隐藏层维度
+  num_layers: 2         # LSTM 层数
+  dropout: 0.3
+  bidirectional: false  # 是否双向
+
+# PatchTST 配置 (Patch-based Transformer)
+patchtst:
+  d_model: 128          # 模型维度
+  nhead: 8              # 注意力头数
+  num_layers: 3         # 编码器层数
+  dim_feedforward: 256  # FFN 隐藏层维度
+  dropout: 0.1
+  patch_size: 16        # 补丁大小
+  stride: 8             # 补丁步长 (允许重叠)
+  max_len: 200          # 最大序列长度
+
+# Informer 配置 (ProbSparse Attention)
+informer:
+  d_model: 128          # 模型维度
+  nhead: 8              # 注意力头数
+  num_layers: 3         # 编码器层数
+  dim_feedforward: 256  # FFN 隐藏层维度
+  dropout: 0.1
+  factor: 5             # ProbSparse 采样因子
+  distil: true          # 是否使用蒸馏层
+  max_len: 200          # 最大序列长度
+
+# ===================== 训练设置 =====================
+training:
+  epochs: 100
+  lr: 0.0001            # 学习率
+  weight_decay: 0.00001 # L2 正则
+  patience: 10          # 早停耐心值
+  early_stop: true      # enable early stopping
+  min_delta: 0.001      # minimum improvement to reset patience
+  min_epochs: 5         # minimum epochs before early stopping
+  loss: listwise        # 损失函数: mse / listwise / pairwise / ndcg
+  scheduler: reduce     # 学习率调度: reduce / cosine / none
+  grad_clip: 1.0        # 梯度裁剪
+
+# ===================== 图模型设置 (Phase 2) =====================
+graph:
+  edge_type: hybrid     # industry / correlation / hybrid
+  industry_source: sw   # 行业来源: sw(申万) / ths(同花顺) / em(东财)
+  corr_window: 60       # 相关性计算窗口
+  top_k: 10             # 每只股票保留的邻居数
+  corr_threshold: 0.3   # 相关性阈值
+  industry_weight: 0.5  # 混合图行业边权重
+  corr_weight: 0.5      # 混合图相关性边权重
+  add_self_loops: true  # 是否添加自环
+  refresh_freq: monthly # 图刷新频率: daily / weekly / monthly
+
+# GNN 通用配置
+gnn:
+  input_dim: 64         # 输入特征维度（自动推断）
+  hidden_dim: 128       # 隐藏层维度
+  output_dim: 64        # 输出嵌入维度
+  num_layers: 2         # GNN 层数
+  dropout: 0.1          # Dropout 比率
+  num_heads: 4          # GAT 注意力头数
+  loss: listwise        # 损失函数
+
+  # GraphSAGE 特定配置
+  graphsage:
+    hidden_dim: 128
+    num_layers: 2
+    aggregator: mean    # mean / max / lstm
+
+  # GAT 特定配置
+  gat:
+    hidden_dim: 128
+    num_heads: 4
+    num_layers: 2
+    attention_dropout: 0.1
+
+  # Graphormer 特定配置 (基于 Transformer 的图神经网络)
+  graphormer:
+    hidden_dim: 128
+    num_heads: 4
+    num_layers: 3
+    max_degree: 512       # 最大节点度数
+    max_spatial_dist: 64  # 最大空间距离
+
+# 时序+图融合配置
+fusion:
+  method: concat        # concat / add / gate
+  temporal_weight: 0.5
+  gnn_weight: 0.5
+
+# ===================== 对比学习设置 (Phase 3) =====================
+contrastive:
+  pretrain_epochs: 50
+  proj_dim: 64          # 投影维度
+  loss_type: infonce    # infonce / triplet
+  temperature: 0.07
+  augmentation:
+    time_mask_ratio: 0.1
+    feature_dropout: 0.1
+
+# ===================== MoE 设置 (Phase 4) =====================
+moe:
+  n_experts: 4          # 专家数量
+  gating_features:      # 门控网络输入特征
+    - market_trend
+    - market_volatility
+    - market_breadth
+  reg_lambda: 0.01      # 负载均衡正则
+  top_k: 2              # 每次激活的专家数
+
+# ===================== RL 设置 (Phase 5) =====================
+# 注意: 成本/可交易性/执行口径 从 config.yaml 继承 (rl_adapter/backtest/execution 段)
+# cost_penalty 自动从 CostModel (commission + slippage) 计算，无需手动配置
+#
+# Q5说明: RL 超参配置优先级
+# - rl_trainer 会合并 'rl' 和 'rl_adapter' 段的配置
+# - rl_adapter 段的同名参数会覆盖 rl 段
+# - 例如: 若同时存在 rl.learning_rate 和 rl_adapter.learning_rate，后者生效
+#
+rl:
+  algorithm: ppo        # ppo / a2c / sac
+  total_timesteps: 100000  # 总训练步数
+  learning_rate: 0.0003    # 学习率 (可被 rl_adapter.learning_rate 覆盖)
+  n_steps: 2048            # 每次更新的步数
+  batch_size: 64           # 批大小
+  gamma: 0.99              # 折扣因子
+  clip_range: 0.2          # PPO clip
+
+  # 奖励设计
+  reward:
+    type: sharpe        # sharpe / sortino / return
+    # cost_penalty: 已移除，自动从 CostModel 计算
+    turnover_penalty: 0.001
+
+  # 动作空间 (参数从 config.yaml 的 rl_adapter 段继承)
+  action:
+    type: continuous    # discrete / continuous
+    n_stocks: 50        # 最大持仓数 (可被 rl_adapter.max_stocks 覆盖)
+
+  # R5修复: 股票池配置 (避免前视偏差)
+  stock_pool_mode: dynamic    # static: 全数据前N天 / dynamic: 按episode动态调整 (推荐)
+  stock_pool_lookback: 30     # 用于选股的历史天数
+
+# rl_adapter 段用于覆盖 rl 段的配置 (可选)
+# 取消注释以下行来覆盖特定参数:
+# rl_adapter:
+#   learning_rate: 0.0001      # 覆盖 rl.learning_rate
+#   max_stocks: 100            # 覆盖 rl.action.n_stocks
+#   extended_features: false   # 是否使用扩展特征 (mean+std+q25+q75)
+
+# ===================== 文本因子设置 (Phase 6) =====================
+text:
+  enabled: false        # 是否启用
+  news_source:
+    - stock_research_report_em
+    - stock_zh_a_disclosure_report_cninfo
+    - stock_notice_report
+  embedding_model: null # 文本嵌入模型
+  sentiment_model: null # 情感分析模型
+  update_freq: daily
+
+# N2修复: 回测设置已移至顶部 (backtest: null)，从 config.yaml 继承
+# 如需覆盖，在顶部的 backtest 段取消注释并定义
+
+# ===================== 评估设置 =====================
+evaluation:
+  metrics:
+    - rank_ic
+    - ic_ir
+    - top_n_excess
+    - cost_adjusted_return
+    - sharpe_ratio
+    - max_drawdown
+  top_n_list: [10, 20, 50]  # 评估的选股数量
+
+# ===================== 日志设置 =====================
+logging:
+  level: INFO
+  save_dir: "output/logs/deep"
+  wandb:
+    enabled: false
+    project: "stock-deep"
+    entity: null
+
+# ===================== 模型保存设置 =====================
+checkpoint:
+  save_dir: "output/models/deep"
+  save_freq: 10         # 每N个epoch保存
+  keep_last: 3          # 保留最近N个检查点

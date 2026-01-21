@@ -1,0 +1,191 @@
+# A股多因子选股系统配置文件
+
+# 路径配置
+paths:
+  data_root: "data"
+  raw_data: "data/raw"
+  processed_data: "data/processed"
+  output: "output"
+
+# 数据采集配置
+data_fetch:
+  # 历史数据起始日期
+  start_date: "20200101"
+  # 是否在下载失败时中止（否则记录失败列表并继续）
+  fail_fast: false
+  # 请求间隔(秒)，避免被封IP - 增加到1.5秒减少被封风险
+  request_interval: 1.5
+  # 失败重试次数
+  max_retries: 5
+  # 失败后等待时间倍数
+  retry_wait_multiplier: 3
+  # 复权方式: hfq-后复权, qfq-前复权, 空-不复权
+  adjust: "hfq"
+  # 财务数据更新配置
+  financial_update:
+    smart_skip: true
+    update_in_disclosure_period_only: true
+    disclosure_months: [4, 8, 10]
+    disclosure_day_start: 15
+    force_update_interval_days: 90
+
+# 股票池过滤条件
+stock_pool:
+  # 排除ST股票
+  exclude_st: true
+  # 最小上市天数
+  min_list_days: 120
+  # 最小日均成交额(万元)
+  min_avg_amount: 3000
+  # 最小日均换手率(%)
+  min_avg_turnover: 0.5
+
+# 因子配置
+factors:
+  # 动量因子回看期(交易日)
+  momentum_windows: [20, 60, 120]
+  # 动量因子跳过最近N日(避免短期反转)
+  momentum_skip_days: 5
+  # 波动率计算窗口
+  volatility_window: 20
+  # 资金流统计窗口
+  flow_windows: [5, 20]
+  # 是否并行计算因子 (股票级并行)
+  parallel: true
+  # 并行线程数（parallel=true 生效）
+  parallel_workers: 8
+  # 是否启用日期级并行 (多个日期同时计算)
+  parallel_dates: false
+  # 日期并行线程数 (parallel_dates=true 生效)
+  date_workers: 16
+  # 深度学习因子计算频率: daily-每天, weekly-每周, biweekly-双周
+  dl_compute_freq: "daily"
+
+# 因子权重配置 (改进版: 加入赚钱效应因子)
+weights:
+  quality: 0.30      # 质量因子权重 (降低)
+  valuation: 0.15    # 估值因子权重
+  momentum: 0.15     # 动量因子权重 (大幅降低，熊市容易失效)
+  flow: 0.15         # 资金因子权重
+  sentiment: 0.25    # 新增: 赚钱效应/情绪因子权重 (核心改进)
+
+# 回测配置
+backtest:
+  # 调仓频率: weekly-周频, biweekly-双周频, monthly-月频
+  rebalance_freq: "biweekly"
+  # 选股数量
+  top_n: 50
+  # 单票最大仓位
+  max_position: 0.05
+  # 佣金费率
+  commission: 0.001
+  # 滑点
+  slippage: 0.001
+  # 基准指数代码
+  benchmark: "000300"
+  # 回测起始日期
+  backtest_start: "20200101"
+  # 回测结束日期
+  backtest_end: "20260114"
+
+# 机器学习配置 (改进版)
+ml:
+  # 训练窗口(年)
+  train_window_years: 3
+  # 验证窗口(年)
+  valid_window_years: 1
+  # 预测期(交易日)
+  # P4-2说明: 该参数作为回退值。当use_dynamic_label=True时(默认)，
+  # 标签使用实际到下次调仓执行日的天数，更准确地反映持有期收益。
+  # 仅当无法计算动态标签时才使用此固定值。
+  forward_days: 20
+  # XGBoost参数 (优化后)
+  xgboost:
+    n_estimators: 200
+    max_depth: 4           # 降低深度防止过拟合
+    learning_rate: 0.05    # 降低学习率
+    subsample: 0.7
+    colsample_bytree: 0.7
+    min_child_weight: 5    # 增加最小样本权重
+    reg_alpha: 0.1         # L1正则化
+    reg_lambda: 1.0        # L2正则化
+    early_stopping_rounds: 20  # 早停
+  # LightGBM参数 (优化后)
+  lightgbm:
+    n_estimators: 200
+    max_depth: 4
+    learning_rate: 0.05
+    num_leaves: 20         # 降低叶子数
+    min_child_samples: 30  # 最小样本数
+    reg_alpha: 0.1
+    reg_lambda: 1.0
+    feature_fraction: 0.7
+    bagging_fraction: 0.7
+    bagging_freq: 5
+
+# P3-1: 成本感知优化配置
+optimization:
+  # 成本惩罚系数 (1.0表示1%成本需要1%alpha提升来弥补)
+  cost_penalty_lambda: 1.0
+  # 最小换股阈值 (得分差异低于此值不换股)
+  min_swap_threshold: 0.02
+  # 最大换手率约束
+  max_turnover: 0.50
+
+# P5: 收盘换仓统一口径配置
+# 目标：将回测执行、估值、训练标签统一为 close→close
+execution:
+  # 执行价格类型: close=收盘价(收盘换仓), open=开盘价(T+1执行)
+  execution_price: "close"
+  # 是否同日收盘执行: true=rb_date收盘执行, false=T+1开盘执行
+  trade_at_close: true
+  # 涨跌停判断基准: close=用收盘价判断, open=用开盘价判断
+  limit_check_price: "close"
+  # ML标签入场价格: close=收盘价, open=开盘价
+  label_entry: "close"
+  # ML标签出场价格: close=收盘价, open=开盘价
+  label_exit: "close"
+  # Purge安全缓冲天数，防止标签泄露
+  purge_safety_buffer: 5
+
+# P5: 流动性因子配置
+liquidity:
+  # 成交额计算窗口(交易日)
+  avg_amount_window: 20
+  # 换手率计算窗口(交易日)
+  avg_turnover_window: 20
+  # 最小日均成交额阈值(元) - 低于此值视为流动性不足
+  min_amount_threshold: 10000000
+  # P6-3修复: 最小日均换手率阈值
+  # 使用小数形式: 0.005 = 0.5%, 0.01 = 1%
+  # 数据格式: 如果原始数据是百分数(如2.9表示2.9%), 代码会自动转换
+  min_turnover_pct: 0.005
+  # 百分位回退阈值(%) - 绝对阈值不满足时的回退百分位
+  fallback_percentile: 10
+
+# RL 适配器配置 (桥接 RL 策略与回测系统)
+rl_adapter:
+  enabled: true
+  # 动作空间类型: discrete (离散Top-N) / continuous (连续权重)
+  action_type: continuous
+  # 最大持仓数 (与 backtest.top_n 保持一致)
+  max_stocks: 50
+  # R6修复: 单票权重上限 (与 backtest.max_position 保持一致)
+  max_position: 0.05
+  # 换手惩罚系数 (额外惩罚换手)
+  turnover_penalty: 0.001
+
+  # RL 训练参数
+  algorithm: ppo                   # ppo / a2c / sac
+  total_timesteps: 100000
+  learning_rate: 0.0003
+  n_steps: 2048
+  batch_size: 64
+  gamma: 0.99                      # 折扣因子
+  clip_range: 0.2                  # PPO clip
+
+  # 奖励配置
+  reward:
+    type: sharpe                   # sharpe / sortino / return
+    # 注意: cost_penalty 自动从 CostModel (commission + slippage) 计算
+    # 不需要手动配置，保证与回测口径一致

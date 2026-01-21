@@ -1,0 +1,24 @@
+# A股多因子选股系统依赖
+# 安装命令: pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+# 数据获取
+akshare>=1.14.0
+
+# 数据处理
+pandas>=2.0.0
+numpy>=1.24.0
+pyarrow>=14.0.0
+
+# 机器学习
+scikit-learn>=1.3.0
+xgboost>=2.0.0
+lightgbm>=4.0.0
+
+# 可视化
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# 工具
+pyyaml>=6.0
+tqdm>=4.65.0
+joblib>=1.3.0
