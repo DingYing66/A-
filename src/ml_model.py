@@ -510,33 +510,49 @@ class MLModel:
                 exit_date = future_dates[forward_days - 1] if len(future_dates) >= forward_days else future_dates[-1]
 
         returns = {}
+        skipped_codes = []
         for code in codes:
-            df = self.processor.load_daily_price(code)
+            try:
+                df = self.processor.load_daily_price(code)
 
-            df['date'] = pd.to_datetime(df['date'])
+                df['date'] = pd.to_datetime(df['date'])
 
-            # P5: 统一的价格获取逻辑
-            entry_row = df[df['date'] == entry_date]
-            exit_row = df[df['date'] == exit_date]
+                # P5: 统一的价格获取逻辑
+                entry_row = df[df['date'] == entry_date]
+                exit_row = df[df['date'] == exit_date]
 
-            if len(entry_row) == 0 or len(exit_row) == 0:
-                raise RuntimeError(f"missing price rows for {code} on {entry_date} or {exit_date}")
+                if len(entry_row) == 0 or len(exit_row) == 0:
+                    logger.debug(f"跳过 {code}: 缺少 {entry_date} 或 {exit_date} 的价格数据")
+                    skipped_codes.append(code)
+                    continue
 
-            # 入场价格
-            if entry_price_type == 'open':
-                entry_price = entry_row['open'].iloc[0]
-            else:
-                entry_price = entry_row['close'].iloc[0]
+                # 入场价格
+                if entry_price_type == 'open':
+                    entry_price = entry_row['open'].iloc[0]
+                else:
+                    entry_price = entry_row['close'].iloc[0]
 
-            # 出场价格
-            if exit_price_type == 'open':
-                exit_price = exit_row['open'].iloc[0]
-            else:
-                exit_price = exit_row['close'].iloc[0]
+                # 出场价格
+                if exit_price_type == 'open':
+                    exit_price = exit_row['open'].iloc[0]
+                else:
+                    exit_price = exit_row['close'].iloc[0]
 
-            if entry_price <= 0:
-                raise RuntimeError(f"invalid entry price for {code} on {entry_date}")
-            returns[code] = (exit_price - entry_price) / entry_price
+                if entry_price <= 0:
+                    logger.debug(f"跳过 {code}: 入场价格无效 ({entry_price})")
+                    skipped_codes.append(code)
+                    continue
+                returns[code] = (exit_price - entry_price) / entry_price
+            except Exception as e:
+                logger.debug(f"跳过 {code}: {e}")
+                skipped_codes.append(code)
+                continue
+
+        if len(skipped_codes) > 0:
+            logger.warning(f"ML标签计算: 跳过 {len(skipped_codes)} 只股票 (缺失数据)")
+
+        if len(returns) == 0:
+            raise RuntimeError(f"所有股票都缺失价格数据，无法计算标签")
 
         stock_returns = pd.Series(returns)
 

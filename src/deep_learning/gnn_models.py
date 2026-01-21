@@ -957,14 +957,19 @@ class TemporalGNNModel(DeepStockModel):
 
     def train(self, X: pd.DataFrame, y: pd.Series, **kwargs) -> Dict:
         """训练融合模型"""
-        logger.info("时序+图融合模型训练暂未完全实现")
-        # TODO: 实现完整训练流程
-        return {'val_loss': float('inf')}
+        raise NotImplementedError(
+            "TemporalGNNModel.train() 尚未实现。"
+            "请使用其他已实现的模型 (如 'graphsage', 'gat')，"
+            "或等待此功能完成后再使用。"
+        )
 
     def predict(self, factor_df: pd.DataFrame) -> pd.Series:
         """预测"""
-        logger.info("时序+图融合模型预测暂未完全实现")
-        return pd.Series(index=factor_df.index, dtype=float)
+        raise NotImplementedError(
+            "TemporalGNNModel.predict() 尚未实现。"
+            "请使用其他已实现的模型 (如 'graphsage', 'gat')，"
+            "或等待此功能完成后再使用。"
+        )
 
 
 # ===================== 工厂函数 =====================

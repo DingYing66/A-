@@ -307,6 +307,8 @@ class Backtester:
 
         if is_st:
             limit_pct = 0.05  # ST股票 ±5%
+        elif code.startswith(('8', '4', '92')):  # 北交所
+            limit_pct = 0.30
         elif code.startswith('688'):  # 科创板
             limit_pct = 0.20
         elif code.startswith('3'):  # 创业板

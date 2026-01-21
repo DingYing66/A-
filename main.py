@@ -207,6 +207,14 @@ def generate_signal(args):
         selected = scorer.select_top_stocks(factor_df, n=top_n, use_adaptive=use_adaptive)
 
     # ========== 计算权重 ==========
+    # 检查空选股情况
+    if len(selected) == 0:
+        logger.warning(f"选股结果为空，无法生成信号")
+        print("\n" + "=" * 70)
+        print("警告: 选股结果为空，无符合条件的股票")
+        print("=" * 70)
+        return None
+
     # 基础等权
     base_weight = 1.0 / len(selected)
     max_position = config['backtest'].get('max_position', 0.08)

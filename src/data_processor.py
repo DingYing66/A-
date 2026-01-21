@@ -72,12 +72,26 @@ class DataProcessor:
             raise RuntimeError(f"未找到日K数据文件 (路径: {price_dir})，无法构建交易日历")
 
         # 扫描所有文件构建完整日历（移除100文件限制）
+        failed_files = []
         for f in tqdm(parquet_files, desc="构建交易日历"):
             try:
                 df = load_parquet(f, columns=['date'])
                 all_dates.update(pd.to_datetime(df['date']).tolist())
             except Exception as e:
+                failed_files.append((f.name, str(e)))
                 continue
+
+        if failed_files:
+            logger.warning(f"交易日历构建: {len(failed_files)} 个文件读取失败")
+            for fname, err in failed_files[:5]:  # 只显示前5个
+                logger.debug(f"  - {fname}: {err}")
+            if len(failed_files) > 5:
+                logger.debug(f"  ... 还有 {len(failed_files) - 5} 个文件失败")
+
+        # 检查失败比例是否过高
+        fail_ratio = len(failed_files) / len(parquet_files) if parquet_files else 0
+        if fail_ratio > 0.1:  # 超过10%文件失败则告警
+            logger.warning(f"交易日历构建: 失败文件比例过高 ({fail_ratio:.1%})，日历可能不完整")
 
         calendar = pd.DatetimeIndex(sorted(all_dates))
         logger.info(f"交易日历构建完成: {len(calendar)} 个交易日, "
@@ -204,7 +218,9 @@ class DataProcessor:
         if not hasattr(self, '_st_history_cache'):
             self._st_history_cache = self._load_st_history()
         if not self._st_history_cache:
-            return self._is_currently_st(code)
+            # 历史数据缺失时返回False并告警，避免前视偏差
+            logger.warning(f"ST历史数据缺失，无法判断 {code} 在 {date} 的ST状态，默认返回False")
+            return False
         if code not in self._st_history_cache:
             return False
         st_periods = self._st_history_cache[code]

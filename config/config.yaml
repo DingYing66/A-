@@ -33,6 +33,8 @@ data_fetch:
 stock_pool:
   # 排除ST股票
   exclude_st: true
+  # 排除北交所股票 (代码以8、4、92开头)
+  exclude_bj: false
   # 最小上市天数
   min_list_days: 120
   # 最小日均成交额(万元)

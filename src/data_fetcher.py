@@ -608,9 +608,10 @@ class DataFetcher:
                 df = df[~df['name'].str.contains('退', na=False)]
                 logger.info(f"排除含退市标识后剩余: {len(df)} 只")
 
-        # 排除北交所股票 (代码以8、4、92开头)
-        df = df[~df['code'].str.startswith(('8', '4', '92'))]
-        logger.info(f"排除北交所后剩余: {len(df)} 只")
+        # 根据配置决定是否排除北交所股票 (代码以8、4、92开头)
+        if config.get('exclude_bj', True):
+            df = df[~df['code'].str.startswith(('8', '4', '92'))]
+            logger.info(f"排除北交所后剩余: {len(df)} 只")
 
         # 排除已知无法下载的股票
         if config.get('exclude_failed', True):
@@ -668,9 +669,10 @@ class DataFetcher:
                 df = df[~df['name'].str.contains('退', na=False)]
                 logger.info(f"排除含退市标识后剩余: {len(df)} 只")
 
-        # 排除北交所股票 (代码以8、4、92开头)
-        df = df[~df['code'].str.startswith(('8', '4', '92'))]
-        logger.info(f"排除北交所后剩余: {len(df)} 只")
+        # 根据配置决定是否排除北交所股票 (代码以8、4、92开头)
+        if config.get('exclude_bj', True):
+            df = df[~df['code'].str.startswith(('8', '4', '92'))]
+            logger.info(f"排除北交所后剩余: {len(df)} 只")
 
         # 注意：不做流动性过滤（成交额、换手率），保留完整数据
         logger.info(f"下载股票池从 {original_count} 过滤到 {len(df)} (不含流动性过滤)")
@@ -2032,7 +2034,7 @@ class DataFetcher:
 
         except Exception as e:
             logger.debug(f"获取 {code} 机构持股(基金)失败: {e}")
-            raise RuntimeError("institution holding fetch failed")
+            # 继续尝试备选方案，不要raise
 
         # 备选方案: 尝试获取十大股东
         try:
@@ -2122,7 +2124,7 @@ class DataFetcher:
 
         except Exception as e:
             logger.warning(f"stock_report_fund_hold 失败: {e}, 尝试备选接口...")
-            raise RuntimeError("fund holding fetch failed")
+            # 继续尝试备选方案，不要raise
 
         try:
             # 方案2: 备选接口 fund_report_stock_cninfo (巨潮资讯)

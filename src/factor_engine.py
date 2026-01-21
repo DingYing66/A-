@@ -66,8 +66,7 @@ class FactorEngine:
             'quality': ['roe', 'roa', 'gross_margin', 'net_margin', 'ocf_ratio'],
             'valuation': ['pe_ttm', 'pb', 'ps_ttm', 'div_yield',
                           'pe_relative', 'pb_relative'],
-            'momentum': ['ret_20d', 'ret_60d', 'ret_120d',
-                         'new_high', 'consecutive_up'],
+            'momentum': ['ret_20d', 'ret_60d', 'ret_120d'],
             'volatility': ['vol_20d', 'max_drawdown_20d'],
             'flow': ['net_inflow_5d', 'net_inflow_20d', 'north_change'],
             # 赚钱效应因子 (新增 new_high_20d/60d, dist_to_breakout)
@@ -100,7 +99,6 @@ class FactorEngine:
             'pe_relative': -1, 'pb_relative': -1,
             # 动量因子
             'ret_20d': 1, 'ret_60d': 1, 'ret_120d': 1,
-            'new_high': 1, 'consecutive_up': 1,
             # 波动因子 (低波动好)
             'vol_20d': -1, 'max_drawdown_20d': -1,
             # 资金因子
@@ -982,83 +980,88 @@ class FactorEngine:
             所有因子的字典
         """
         factors = {'code': code, 'date': date}
+        factor_errors = []  # 记录因子计算错误
 
         # 动量因子
         try:
             momentum = self.compute_momentum_factors(code, date)
             factors.update(momentum)
-        except Exception:
-            pass  # 失败时跳过，保持已有因子
+        except Exception as e:
+            factor_errors.append(('momentum', str(e)))
 
         # 波动率因子
         try:
             volatility = self.compute_volatility_factors(code, date)
             factors.update(volatility)
-        except Exception:
-            pass
+        except Exception as e:
+            factor_errors.append(('volatility', str(e)))
 
         # 质量因子
         try:
             quality = self.compute_quality_factors(code, date)
             factors.update(quality)
-        except Exception:
-            pass
+        except Exception as e:
+            factor_errors.append(('quality', str(e)))
 
         # 估值因子
         try:
             valuation = self.compute_valuation_factors(code, date)
             factors.update(valuation)
-        except Exception:
-            pass
+        except Exception as e:
+            factor_errors.append(('valuation', str(e)))
 
         # 资金流因子
         try:
             flow = self.compute_flow_factors(code, date)
             factors.update(flow)
-        except Exception:
-            pass
+        except Exception as e:
+            factor_errors.append(('flow', str(e)))
 
         # P5: 流动性因子
         try:
             liquidity = self.compute_liquidity_factors(code, date)
             factors.update(liquidity)
-        except Exception:
-            pass
+        except Exception as e:
+            factor_errors.append(('liquidity', str(e)))
 
         # 技术信号因子
         try:
             tech = self.compute_tech_signal_factors(code, date)
             factors.update(tech)
-        except Exception:
-            pass
+        except Exception as e:
+            factor_errors.append(('tech_signal', str(e)))
 
         # 新增: 赚钱效应/情绪因子
         try:
             sentiment = self.compute_sentiment_factors(code, date)
             factors.update(sentiment)
-        except Exception:
-            pass
+        except Exception as e:
+            factor_errors.append(('sentiment', str(e)))
 
         # P0-2: 趋势质量因子 (可复现)
         try:
             trend_quality = self.compute_trend_quality_factors(code, date)
             factors.update(trend_quality)
-        except Exception:
-            pass
+        except Exception as e:
+            factor_errors.append(('trend_quality', str(e)))
 
         # P2-3: 机构持股因子 (披露日对齐)
         try:
             institution = self.compute_institution_factors_aligned(code, date)
             factors.update(institution)
-        except Exception:
-            pass
+        except Exception as e:
+            factor_errors.append(('institution', str(e)))
 
         # 新增: 市场环境因子 (全市场统一值)
         try:
             market_regime = self.compute_market_regime_factors(date)
             factors.update(market_regime)
-        except Exception:
-            pass
+        except Exception as e:
+            factor_errors.append(('market_regime', str(e)))
+
+        # 记录因子计算错误（如果有）
+        if factor_errors:
+            logger.debug(f"因子计算异常 [{code}@{date}]: {factor_errors}")
 
         return factors
 
