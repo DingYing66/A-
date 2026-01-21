@@ -21,6 +21,7 @@ from .data_processor import DataProcessor
 from .factor_engine import FactorEngine
 from .scorer import FactorScorer, ConstrainedSelector, CostAwareOptimizer
 from .adaptive_weights import AdaptiveWeightManager
+from .position_policy import compute_position_ratio, get_market_factors_from_df
 
 # Bug修复: 使用统一的策略接口
 try:
@@ -133,7 +134,7 @@ class Backtester:
 
     def _compute_position_ratio(self, factor_df: pd.DataFrame) -> float:
         """
-        根据市场环境计算仓位比例 (部分计算模式: 因子缺失时使用默认值)
+        根据市场环境计算仓位比例 (使用统一的position_policy模块)
 
         基于"赚钱效应"的核心逻辑:
         - 市场广度高 (多数股票上涨) → 高仓位
@@ -148,40 +149,16 @@ class Backtester:
         if not self.use_position_control:
             return 1.0
 
-        required_cols = ['market_trend', 'market_breadth', 'market_volatility']
-        missing = [col for col in required_cols if col not in factor_df.columns]
-        if missing:
-            logger.warning(f"市场环境因子缺失: {missing}，使用默认仓位比例 1.0")
-            return 1.0  # 缺失时返回默认值而非报错
-        market_trend = factor_df['market_trend'].iloc[0]
-        market_breadth = factor_df['market_breadth'].iloc[0]
-        market_volatility = factor_df['market_volatility'].iloc[0]
+        # 使用统一的市场因子提取函数
+        market_trend, market_breadth, market_volatility = get_market_factors_from_df(factor_df)
 
-        # 仓位计算逻辑
-        position_ratio = 1.0
+        # 使用统一的仓位计算逻辑
+        position_ratio, risk_level = compute_position_ratio(
+            market_trend, market_breadth, market_volatility
+        )
 
-        # 1. 根据市场趋势调整
-        if market_trend < -0.05:  # 市场20日跌超5%
-            position_ratio *= 0.6
-        elif market_trend < 0:
-            position_ratio *= 0.8
-
-        # 2. 根据市场广度调整 (赚钱效应核心)
-        if market_breadth < 0.35:  # 少于35%股票上涨
-            position_ratio *= 0.5
-        elif market_breadth < 0.45:
-            position_ratio *= 0.7
-        elif market_breadth > 0.6:  # 超过60%股票上涨
-            position_ratio *= 1.1  # 可以稍微加仓
-
-        # 3. 根据市场波动率调整
-        if market_volatility > 0.35:  # 年化波动超35%
-            position_ratio *= 0.7
-        elif market_volatility > 0.25:
-            position_ratio *= 0.85
-
-        # 限制在合理范围
-        position_ratio = max(0.3, min(1.0, position_ratio))
+        logger.debug(f"仓位控制: trend={market_trend:.2%}, breadth={market_breadth:.1%}, "
+                    f"vol={market_volatility:.1%} -> ratio={position_ratio:.1%}, risk={risk_level}")
 
         return position_ratio
 
@@ -435,7 +412,7 @@ class Backtester:
         suspended_codes = set()  # 记录停牌股（在exec_date）
         for code, shares in current_holdings.items():
             # 使用valuation_date估值，避免前视
-            price = self._get_last_valid_price(code, valuation_date)
+            # Fix 9: 删除重复调用
             price = self._get_last_valid_price(code, valuation_date)
             current_values[code] = shares * price
             # 检查exec_date是否停牌（影响交易执行）
@@ -736,15 +713,19 @@ class Backtester:
         # 权重模式需要记录上期权重
         prev_weights_dict = {}
 
+        # Fix 10: 预构建 exec_date -> rb_date 反向索引，优化 O(N*M) 为 O(1)
+        exec_to_rb_map = {exec_date: rb_date for rb_date, exec_date in rebalance_exec_map.items()}
+
         for date in tqdm(trade_dates, desc="回测进行中"):
-            # 检查是否需要调仓
-            for rb_date, exec_date in rebalance_exec_map.items():
+            # Fix 10: 使用反向索引 O(1) 查找，替代遍历 O(M)
+            rb_date = exec_to_rb_map.get(date)
+            if rb_date is not None:
                 # 权重模式和评分模式使用不同的缓存检查
                 should_rebalance = False
                 if mode == 'weight':
-                    should_rebalance = date == exec_date and rb_date in factor_cache
+                    should_rebalance = rb_date in factor_cache
                 else:  # score mode
-                    should_rebalance = date == exec_date and rb_date in score_cache
+                    should_rebalance = rb_date in score_cache
 
                 if should_rebalance:
                     position_ratio = position_ratio_cache.get(rb_date, 1.0)
@@ -766,8 +747,8 @@ class Backtester:
                         # 直接调用权重函数获取目标权重
                         target_weights = weight_func(factor_df, prev_weights_dict)
 
-                        # 应用可交易性过滤
-                        tradeable_df = self._filter_tradeable_stocks(factor_df, exec_date)
+                        # 应用可交易性过滤 (使用当前日期date作为exec_date)
+                        tradeable_df = self._filter_tradeable_stocks(factor_df, date)
                         tradeable_codes = set(tradeable_df['code'].tolist())
 
                         # 过滤不可交易的权重
@@ -797,8 +778,8 @@ class Backtester:
                         # P4-1: 在线应用约束（基于真实持仓）
                         scored_df = score_cache[rb_date]
 
-                        # P4-1: 可交易递补机制 - 过滤exec_date不可交易的股票
-                        tradeable_df = self._filter_tradeable_stocks(scored_df, exec_date)
+                        # P4-1: 可交易递补机制 - 过滤exec_date不可交易的股票 (使用当前日期date)
+                        tradeable_df = self._filter_tradeable_stocks(scored_df, date)
 
                         # 应用约束选股（如果启用）
                         selected = tradeable_df

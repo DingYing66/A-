@@ -276,6 +276,46 @@ class DataFetcher:
         self._delisted_codes_cache = None
         self._failed_codes_cache = None
 
+    def _get_latest_quarter_date(self) -> str:
+        """
+        Fix 7: 动态获取最新季度日期
+
+        季报披露时间:
+        - Q1 (3月31日): 4月30日前披露
+        - Q2 (6月30日): 8月31日前披露
+        - Q3 (9月30日): 10月31日前披露
+        - Q4 (12月31日): 次年4月30日前披露
+
+        Returns:
+            最新可用季度日期，格式 YYYYMMDD
+        """
+        today = datetime.now()
+        year = today.year
+        month = today.month
+
+        # 根据当前月份确定最新可用的季度
+        if month >= 11:  # 11-12月: Q3已披露
+            return f"{year}0930"
+        elif month >= 9:  # 9-10月: Q2已披露
+            return f"{year}0630"
+        elif month >= 5:  # 5-8月: Q1已披露
+            return f"{year}0331"
+        else:  # 1-4月: 上年Q3已披露
+            return f"{year - 1}0930"
+
+    def _get_recent_date(self, days_back: int = 30) -> str:
+        """
+        Fix 7: 获取近期日期
+
+        Args:
+            days_back: 回溯天数
+
+        Returns:
+            日期字符串，格式 YYYYMMDD
+        """
+        recent = datetime.now() - timedelta(days=days_back)
+        return recent.strftime('%Y%m%d')
+
     def _normalize_code(self, code: str) -> str:
         raw = str(code).strip()
         if not raw:
@@ -2016,11 +2056,13 @@ class DataFetcher:
         """
         code = self._normalize_code(code)
         try:
+            # Fix 7: 使用动态日期而非硬编码
+            quarter_date = self._get_latest_quarter_date()
             # 尝试使用 stock_report_fund_hold_detail (基金持仓明细)
             df = self._retry_request(
                 ak.stock_report_fund_hold_detail,
                 symbol=code,
-                date="20240930"  # 最新季度
+                date=quarter_date
             )
             if df is None or len(df) == 0:
                 raise RuntimeError("institution holding fetch failed")
@@ -2163,10 +2205,12 @@ class DataFetcher:
         logger.info("获取机构持股变动数据...")
 
         try:
+            # Fix 7: 使用动态日期而非硬编码
+            recent_date = self._get_recent_date(days_back=30)
             # 尝试获取机构调研数据作为替代
             df = self._retry_request(
                 ak.stock_jgdy_tj_em,
-                date="20241201"  # 近期
+                date=recent_date
             )
             if df is None or len(df) == 0:
                 raise RuntimeError("institution holding change fetch failed")

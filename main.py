@@ -25,6 +25,7 @@ from src.ml_model import MLModel, EnsembleModel
 from src.backtester import Backtester, WalkForwardBacktester
 from src.performance import PerformanceAnalyzer
 from src.adaptive_weights import AdaptiveWeightManager
+from src.position_policy import compute_position_ratio, get_market_factors_from_df
 from src.utils import load_config, setup_logger, ensure_dir, get_project_root
 
 logger = setup_logger('main')
@@ -161,9 +162,7 @@ def generate_signal(args):
     factor_df = factor_engine.standardize_factors(factor_df)
 
     # ========== 市场环境分析 ==========
-    market_trend = factor_df['market_trend'].iloc[0] if 'market_trend' in factor_df.columns else 0
-    market_breadth = factor_df['market_breadth'].iloc[0] if 'market_breadth' in factor_df.columns else 0.5
-    market_volatility = factor_df['market_volatility'].iloc[0] if 'market_volatility' in factor_df.columns else 0.2
+    market_trend, market_breadth, market_volatility = get_market_factors_from_df(factor_df)
 
     # 获取自适应权重和市场状态
     if use_adaptive:
@@ -174,25 +173,10 @@ def generate_signal(args):
         market_status = "均衡型(默认)"
         regime_info = None
 
-    # 计算建议仓位比例
-    position_ratio = 1.0
-    risk_level = "正常"
-
-    if market_trend < -0.05:  # 市场20日跌超5%
-        position_ratio *= 0.6
-        risk_level = "高风险"
-    elif market_trend < 0:
-        position_ratio *= 0.8
-        risk_level = "中风险"
-
-    if market_breadth < 0.3:  # 赚钱效应差
-        position_ratio *= 0.7
-        risk_level = "高风险" if risk_level != "高风险" else risk_level
-
-    if market_volatility > 0.3:  # 高波动
-        position_ratio *= 0.8
-
-    position_ratio = max(0.3, min(1.0, position_ratio))
+    # 计算建议仓位比例 (使用统一的position_policy模块)
+    position_ratio, risk_level = compute_position_ratio(
+        market_trend, market_breadth, market_volatility
+    )
 
     # ========== 选股 ==========
     top_n = args.top_n or config['backtest']['top_n']

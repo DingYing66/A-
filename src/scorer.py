@@ -33,11 +33,13 @@ class FactorScorer:
 
         # P2-4修复: 各类别包含的因子（与FactorEngine保持一致）
         # 将trend_quality和institution因子合并到现有类别
+        # Fix 5: 修正因子命名，与 factor_engine.py 保持一致
         self.category_factors = {
             'quality': ['roe', 'roa', 'gross_margin', 'net_margin', 'ocf_ratio'],
             'valuation': ['pe_ttm', 'pb', 'ps_ttm', 'div_yield',
                           'pe_relative', 'pb_relative'],  # 添加相对估值
-            'momentum': ['ret_20d', 'ret_60d', 'ret_120d', 'new_high', 'consecutive_up',
+            'momentum': ['ret_20d', 'ret_60d', 'ret_120d',
+                         'new_high_20d', 'new_high_60d',  # Fix 5: 修正命名
                          # P2-4: 从trend_quality合并的因子
                          'consecutive_up_days', 'dist_to_high_20d', 'dist_to_high_60d',
                          'ma20_bias', 'ma20_slope', 'trend_strength', 'price_position'],
@@ -502,9 +504,11 @@ class ConstrainedSelector:
                 turnover_check = turnover_val >= min_turnover
 
         if amount_check is None and turnover_check is None:
-            # 流动性数据缺失时，默认通过检查（允许选入）
-            # 这样可以在数据不完整时仍能运行回测
-            return True
+            # Fix 6: 流动性数据缺失时，默认拒绝（保守策略）
+            # 违反风控原则：缺失数据不应默认通过
+            code = row.get('code', 'unknown')
+            logger.debug(f"流动性数据缺失: {code}，默认拒绝")
+            return False
 
         if amount_check is not None and turnover_check is not None:
             return amount_check or turnover_check

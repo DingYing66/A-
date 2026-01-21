@@ -756,15 +756,20 @@ class StockGraphBuilder:
         return self.cache_dir / f'graph_{edge_type}_{date_str}_{universe_id}.npz'
 
     def _save_cache(self, cache_path: Path, graph: GraphBundle):
-        """保存图缓存"""
+        """保存图缓存 (Fix 3: 安全格式，避免 pickle)"""
+        # 将字符串数据编码为字节数组，避免使用 pickle
+        node_codes_bytes = np.array([c.encode('utf-8') for c in graph.node_codes], dtype='S10')
+        graph_type_bytes = np.array([graph.graph_type.encode('utf-8')], dtype='S32')
+        universe_id_bytes = np.array([graph.universe_id.encode('utf-8')], dtype='S32')
+
         np.savez_compressed(
             cache_path,
             node_features=graph.node_features,
             edge_index=graph.edge_index,
             edge_weight=graph.edge_weight if graph.edge_weight is not None else np.array([]),
-            node_codes=np.array(graph.node_codes),
-            graph_type=graph.graph_type,
-            universe_id=graph.universe_id,
+            node_codes=node_codes_bytes,
+            graph_type=graph_type_bytes,
+            universe_id=universe_id_bytes,
         )
 
         # 保存元信息
@@ -774,21 +779,27 @@ class StockGraphBuilder:
         logger.debug(f"图缓存已保存: {cache_path}")
 
     def _load_cache(self, cache_path: Path) -> Optional[GraphBundle]:
-        """加载图缓存"""
+        """加载图缓存 (Fix 3: 禁用 pickle，使用安全格式)"""
         try:
-            data = np.load(cache_path, allow_pickle=True)
+            # Fix 3: 禁用 pickle 以避免反序列化执行风险
+            data = np.load(cache_path, allow_pickle=False)
 
             edge_weight = data['edge_weight']
             if len(edge_weight) == 0:
                 edge_weight = None
 
+            # 解码字节数组为字符串
+            node_codes = [c.decode('utf-8') for c in data['node_codes']]
+            graph_type = data['graph_type'][0].decode('utf-8')
+            universe_id = data['universe_id'][0].decode('utf-8')
+
             graph = GraphBundle(
                 node_features=data['node_features'],
                 edge_index=data['edge_index'],
                 edge_weight=edge_weight,
-                node_codes=data['node_codes'].tolist(),
-                graph_type=str(data['graph_type']),
-                universe_id=str(data['universe_id']),
+                node_codes=node_codes,
+                graph_type=graph_type,
+                universe_id=universe_id,
                 meta=CacheMeta.load(cache_path),
             )
 

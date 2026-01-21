@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from datetime import datetime
 from typing import List, Optional, Dict, Tuple
+from functools import lru_cache
 
 import pandas as pd
 import numpy as np
@@ -40,11 +41,15 @@ class DataProcessor:
         self._available_codes_cache = {}  # {date_str: [codes]}
         self._global_trading_index = None  # 全局交易日期索引 {code: set(dates)}
 
+        # Fix 8: 价格数据缓存（性能优化）
+        self._daily_price_cache = {}  # {code: DataFrame}
+
     @property
     def trade_calendar(self) -> pd.DatetimeIndex:
-        """交易日历（懒加载）"""
+        """交易日历（懒加载，优先使用缓存）"""
         if self._trade_calendar is None:
-            self._trade_calendar = self.build_trade_calendar()
+            # Fix 4: 优先加载已保存的缓存，而非每次重新构建
+            self._trade_calendar = self.load_trade_calendar()
         return self._trade_calendar
 
     def build_trade_calendar(self) -> pd.DatetimeIndex:
@@ -117,13 +122,31 @@ class DataProcessor:
         return self.build_trade_calendar()
 
     def load_daily_price(self, code: str, adjust: str = None) -> Optional[pd.DataFrame]:
-        """Load daily price data for a single stock (strict)."""
+        """Load daily price data for a single stock (with cache)."""
         adjust = adjust if adjust is not None else self.config['data_fetch']['adjust']
         adjust_dir = adjust if adjust else 'none'
+
+        # Fix 8: 使用缓存避免重复IO
+        cache_key = f"{code}_{adjust_dir}"
+        if cache_key in self._daily_price_cache:
+            return self._daily_price_cache[cache_key]
+
         path = self.raw_path / 'daily_price' / adjust_dir / f"{code}.parquet"
         if not path.exists():
             raise FileNotFoundError(f"daily price not found: {path}")
-        return load_parquet(path)
+
+        df = load_parquet(path)
+
+        # 缓存数据（限制缓存大小为500只股票）
+        if len(self._daily_price_cache) < 500:
+            self._daily_price_cache[cache_key] = df
+
+        return df
+
+    def clear_price_cache(self):
+        """清除价格数据缓存"""
+        self._daily_price_cache.clear()
+        logger.debug("价格数据缓存已清除")
 
     def load_all_daily_prices(self, adjust: str = None) -> pd.DataFrame:
         """Load all daily price data (strict)."""

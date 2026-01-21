@@ -1153,9 +1153,24 @@ class FactorEngine:
         label_exit = exec_config.get('label_exit')
         if label_entry is None or label_exit is None:
             raise RuntimeError('execution.label_entry/label_exit required')
-        future_date = self._get_future_trading_date(date, holding_period)
+
+        # Fix 2: 末端数据不足时返回 NaN 而非抛错
+        try:
+            future_date = self._get_future_trading_date(date, holding_period)
+        except RuntimeError as e:
+            # 末端数据不足，返回带 NaN forward_return 的 df
+            logger.debug(f"前向收益计算: {date} 后交易日不足 {holding_period} 天: {e}")
+            df = df.copy()
+            df['forward_return'] = np.nan
+            return df
+
         if label_entry == 'open':
-            next_date = self._get_future_trading_date(date, 1)
+            try:
+                next_date = self._get_future_trading_date(date, 1)
+            except RuntimeError:
+                df = df.copy()
+                df['forward_return'] = np.nan
+                return df
         else:
             next_date = None
         df = df.copy()
@@ -1240,7 +1255,8 @@ class FactorEngine:
         factor_cols = [c for c in df.columns if c not in exclude_cols]
 
         for col in factor_cols:
-            if df[col].dtype in [np.float64, np.int64, float, int]:
+            # Fix 11: 使用 pandas 类型检查，支持所有数值类型
+            if pd.api.types.is_numeric_dtype(df[col]):
                 # 跳过全为空或只有一个值的列
                 non_null = df[col].dropna()
                 if len(non_null) < 2 or non_null.nunique() < 2:

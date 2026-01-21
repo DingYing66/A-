@@ -117,10 +117,10 @@ python main.py run [--skip-download] [其他回测参数]
 | 类别 | 权重 | 主要因子 |
 |------|------|----------|
 | 质量 (Quality) | 30% | ROE, ROA, 毛利率, 净利率, 现金流比率 |
-| 估值 (Valuation) | 15% | PE, PB, PS, 股息率 |
+| 估值 (Valuation) | 20% | PE, PB, PS, 股息率 |
 | 动量 (Momentum) | 15% | 20/60/120日收益率, 创新高, 连涨天数 |
-| 资金 (Flow) | 15% | 主力净流入, 北向资金变化 |
-| 情绪 (Sentiment) | 25% | 相对强度, 短期反转, 量价配合 |
+| 资金 (Flow) | 20% | 主力净流入, 北向资金变化 |
+| 情绪 (Sentiment) | 15% | 相对强度, 短期反转, 量价配合 |
 
 ### 因子缓存
 
@@ -152,16 +152,16 @@ rm -rf data/processed/factors/*.parquet
 # 因子权重
 weights:
   quality: 0.30
-  valuation: 0.15
+  valuation: 0.20
   momentum: 0.15
-  flow: 0.15
-  sentiment: 0.25
+  flow: 0.20
+  sentiment: 0.15
 
 # 回测参数
 backtest:
   rebalance_freq: biweekly  # 调仓频率
   top_n: 50                 # 选股数量
-  max_position: 0.05        # 单票最大仓位
+  max_position: 0.5         # 单票最大仓位
   commission: 0.001         # 佣金率
   slippage: 0.001           # 滑点
   benchmark: "000300"       # 基准指数
