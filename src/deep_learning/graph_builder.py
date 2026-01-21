@@ -779,7 +779,7 @@ class StockGraphBuilder:
         logger.debug(f"图缓存已保存: {cache_path}")
 
     def _load_cache(self, cache_path: Path) -> Optional[GraphBundle]:
-        """加载图缓存 (Fix 3: 禁用 pickle，使用安全格式)"""
+        """加载图缓存 (Fix 3: 禁用 pickle，使用安全格式，兼容旧格式)"""
         try:
             # Fix 3: 禁用 pickle 以避免反序列化执行风险
             data = np.load(cache_path, allow_pickle=False)
@@ -788,10 +788,32 @@ class StockGraphBuilder:
             if len(edge_weight) == 0:
                 edge_weight = None
 
-            # 解码字节数组为字符串
-            node_codes = [c.decode('utf-8') for c in data['node_codes']]
-            graph_type = data['graph_type'][0].decode('utf-8')
-            universe_id = data['universe_id'][0].decode('utf-8')
+            # 解码字节数组为字符串 (兼容新旧格式)
+            node_codes_raw = data['node_codes']
+            if node_codes_raw.dtype.kind == 'S':  # 字节数组 (新格式)
+                node_codes = [c.decode('utf-8') for c in node_codes_raw]
+            else:  # 字符串数组 (旧格式，可能是 Unicode)
+                node_codes = [str(c) for c in node_codes_raw]
+
+            # graph_type 兼容处理
+            graph_type_raw = data['graph_type']
+            if isinstance(graph_type_raw, np.ndarray):
+                if graph_type_raw.dtype.kind == 'S':  # 字节数组
+                    graph_type = graph_type_raw[0].decode('utf-8')
+                else:
+                    graph_type = str(graph_type_raw[0]) if len(graph_type_raw) > 0 else str(graph_type_raw)
+            else:
+                graph_type = str(graph_type_raw)
+
+            # universe_id 兼容处理
+            universe_id_raw = data['universe_id']
+            if isinstance(universe_id_raw, np.ndarray):
+                if universe_id_raw.dtype.kind == 'S':  # 字节数组
+                    universe_id = universe_id_raw[0].decode('utf-8')
+                else:
+                    universe_id = str(universe_id_raw[0]) if len(universe_id_raw) > 0 else str(universe_id_raw)
+            else:
+                universe_id = str(universe_id_raw)
 
             graph = GraphBundle(
                 node_features=data['node_features'],
@@ -806,7 +828,13 @@ class StockGraphBuilder:
             return graph
 
         except Exception as e:
-            raise RuntimeError(f"failed to load graph cache: {e}") from e
+            # 旧格式或损坏的缓存，删除并返回 None 触发重建
+            logger.warning(f"图缓存加载失败，将删除并重建: {cache_path}, 错误: {e}")
+            try:
+                cache_path.unlink()
+            except Exception:
+                pass
+            return None
 
 
 def build_stock_graph(codes: List[str],

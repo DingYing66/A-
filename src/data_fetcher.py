@@ -679,6 +679,7 @@ class DataFetcher:
         """
         下载阶段的股票池过滤（只做基本过滤，不排除历史失败的股票）
 
+        修改: 使用 get_available_codes_basic() 获取基础股票池
         下载完整数据，流动性过滤在选股阶段进行，这样可以：
         1. 保留科创板、创业板等所有板块的数据
         2. 在选股时根据需要灵活调整流动性要求
@@ -694,7 +695,18 @@ class DataFetcher:
         df = stock_list.copy()
         original_count = len(df)
 
-        # 排除ST股票
+        # 使用基础可交易列表过滤（仅检查行情数据，不应用过滤配置）
+        date = pd.Timestamp.now()
+        try:
+            basic_codes = self.processor.get_available_codes_basic(date)
+            df = df[df['code'].isin(basic_codes)]
+            logger.info(f"使用基础股票池过滤: {original_count} → {len(df)} 只")
+        except Exception as e:
+            logger.warning(f"获取基础股票池失败，使用原有过滤逻辑: {e}")
+            # 回退到原有逻辑
+            pass
+
+        # 只做最基本的过滤（ST、北交所）
         if config.get('exclude_st', True):
             df = df[~df['name'].str.contains('ST|\\*ST', na=False)]
             logger.info(f"排除ST后剩余: {len(df)} 只")
@@ -710,12 +722,12 @@ class DataFetcher:
                 logger.info(f"排除含退市标识后剩余: {len(df)} 只")
 
         # 根据配置决定是否排除北交所股票 (代码以8、4、92开头)
-        if config.get('exclude_bj', True):
+        if config.get('exclude_bj', False):  # 默认为false，下载阶段保留北交所数据
             df = df[~df['code'].str.startswith(('8', '4', '92'))]
             logger.info(f"排除北交所后剩余: {len(df)} 只")
 
         # 注意：不做流动性过滤（成交额、换手率），保留完整数据
-        logger.info(f"下载股票池从 {original_count} 过滤到 {len(df)} (不含流动性过滤)")
+        logger.info(f"下载股票池从 {original_count} 过滤到 {len(df)} (基础过滤)")
         return df
 
     def fetch_daily_price(self, code: str, start_date: str = None,
@@ -2195,43 +2207,47 @@ class DataFetcher:
 
     def fetch_institution_holding_change(self) -> pd.DataFrame:
         """
-        P2-2: 获取机构持股变动数据
+        P2-2: 获取机构持股变动数据 (带日期回退)
 
-        获取机构增减持变动
+        获取机构增减持变动。如果某个日期无数据（周末、节假日、数据延迟），
+        会自动回退到更早的日期尝试。
 
         Returns:
-            机构持股变动DataFrame
+            机构持股变动DataFrame，如果所有日期都失败则返回空DataFrame
         """
         logger.info("获取机构持股变动数据...")
 
-        try:
-            # Fix 7: 使用动态日期而非硬编码
-            recent_date = self._get_recent_date(days_back=30)
-            # 尝试获取机构调研数据作为替代
-            df = self._retry_request(
-                ak.stock_jgdy_tj_em,
-                date=recent_date
-            )
-            if df is None or len(df) == 0:
-                raise RuntimeError("institution holding change fetch failed")
+        # Fix 13: 尝试多个日期，从近到远回退
+        for days_back in [30, 60, 90]:
+            try:
+                recent_date = self._get_recent_date(days_back=days_back)
+                # 尝试获取机构调研数据作为替代
+                df = self._retry_request(
+                    ak.stock_jgdy_tj_em,
+                    date=recent_date
+                )
 
-            if df is not None and len(df) > 0:
-                # 标准化列名
-                df = standardize_columns(df)
-                df['download_date'] = datetime.now().strftime('%Y%m%d')
+                if df is not None and len(df) > 0:
+                    # 标准化列名
+                    df = standardize_columns(df)
+                    df['download_date'] = datetime.now().strftime('%Y%m%d')
 
-                save_dir = ensure_dir(self.raw_path / "institution")
-                save_path = save_dir / "institution_research.parquet"
-                save_parquet(df, save_path)
+                    save_dir = ensure_dir(self.raw_path / "institution")
+                    save_path = save_dir / "institution_research.parquet"
+                    save_parquet(df, save_path)
 
-                logger.info(f"机构调研数据已保存: {len(df)} 条")
-                return df
+                    logger.info(f"机构调研数据已保存: {len(df)} 条 (日期回退: {days_back}天)")
+                    return df
 
-        except Exception as e:
-            logger.warning(f"获取机构调研数据失败: {e}")
-            raise RuntimeError("institution holding change fetch failed")
+                logger.debug(f"日期 {recent_date} 无数据，尝试更早日期")
 
-        raise RuntimeError("institution holding change fetch failed")
+            except Exception as e:
+                logger.debug(f"日期回退 {days_back} 天获取失败: {e}")
+                continue
+
+        # 所有日期都失败，记录警告但不中断
+        logger.warning("机构持股变动数据获取失败，所有回退日期均无数据")
+        return pd.DataFrame()  # 返回空 DF 而非抛异常
 
     def fetch_index_daily(self, symbol: str = "sh000300",
                           start_date: str = None,

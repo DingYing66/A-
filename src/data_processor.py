@@ -13,7 +13,7 @@ import pandas as pd
 import numpy as np
 from tqdm import tqdm
 
-from .utils import (
+from utils import (
     load_config, setup_logger, load_parquet, save_parquet,
     get_project_root, ensure_dir
 )
@@ -470,7 +470,7 @@ class DataProcessor:
             raise FileNotFoundError(f"stock list file not found: {path}")
         return load_parquet(path)
 
-    def get_available_codes(self, date: pd.Timestamp) -> List[str]:
+    def get_available_codes(self, date: pd.Timestamp, use_filters: bool = True) -> List[str]:
         """
         获取指定日期可交易的股票列表
 
@@ -482,6 +482,7 @@ class DataProcessor:
 
         Args:
             date: 日期
+            use_filters: 是否应用过滤配置 (默认True)
 
         Returns:
             股票代码列表
@@ -490,7 +491,11 @@ class DataProcessor:
 
         # 1. 检查内存缓存
         if date_str in self._available_codes_cache:
-            return self._available_codes_cache[date_str]
+            cached_codes = self._available_codes_cache[date_str]
+            # 如果启用了过滤，需要重新应用过滤（缓存的是基础列表）
+            if use_filters:
+                return self._apply_stock_pool_filters(cached_codes, date)
+            return cached_codes
 
         # 2. 检查磁盘缓存 (HistoricalUniverse生成的缓存)
         cache_path = self.processed_path / 'universe' / f'{date_str}.parquet'
@@ -498,7 +503,12 @@ class DataProcessor:
             try:
                 df = load_parquet(cache_path)
                 codes = df['code'].tolist()
+                # 缓存基础股票列表（不带过滤）
                 self._available_codes_cache[date_str] = codes
+
+                # 如果启用了过滤，应用过滤配置
+                if use_filters:
+                    return self._apply_stock_pool_filters(codes, date)
                 return codes
             except Exception as e:
                 logger.debug(f"P6-1: 读取universe缓存失败: {e}")
@@ -509,11 +519,22 @@ class DataProcessor:
             for code, trading_dates in self._global_trading_index.items():
                 if date in trading_dates:
                     available.append(code)
+
+            # 缓存基础列表（不带过滤）
             self._available_codes_cache[date_str] = available
+
+            # 如果启用了过滤，应用过滤配置
+            if use_filters:
+                return self._apply_stock_pool_filters(available, date)
             return available
 
         # 4. 回退到原始方法（首次调用时自动构建索引）
-        return self._get_available_codes_with_index(date)
+        available = self._get_available_codes_with_index(date)
+
+        # 缓存并应用过滤
+        if use_filters:
+            return self._apply_stock_pool_filters(available, date)
+        return available
 
     def _get_available_codes_with_index(self, date: pd.Timestamp) -> List[str]:
         """Build global trading index (strict partition path only)."""
@@ -538,6 +559,199 @@ class DataProcessor:
         date_str = date.strftime('%Y%m%d')
         self._available_codes_cache[date_str] = available
         return available
+
+    def get_available_codes_basic(self, date: pd.Timestamp) -> List[str]:
+        """
+        获取基础可交易股票列表（无过滤，仅检查行情数据）
+
+        用于下载阶段，确保能下载到最完整的数据集
+
+        Args:
+            date: 日期
+
+        Returns:
+            股票代码列表
+        """
+        return self.get_available_codes(date, use_filters=False)
+
+    def get_available_codes_with_filters(self, date: pd.Timestamp) -> List[str]:
+        """
+        获取过滤后的可交易股票列表（显式启用过滤）
+
+        这是 get_available_codes(date, use_filters=True) 的别名，用于代码可读性
+
+        Args:
+            date: 日期
+
+        Returns:
+            过滤后的股票代码列表
+        """
+        return self.get_available_codes(date, use_filters=True)
+
+    def _apply_stock_pool_filters(self, codes: List[str], date: pd.Timestamp) -> List[str]:
+        """
+        应用股票池过滤规则
+
+        Args:
+            codes: 候选股票代码列表
+            date: 日期（用于检查ST状态、上市天数等）
+
+        Returns:
+            过滤后的股票代码列表
+        """
+        config = self.config.get('stock_pool', {})
+        if not config:
+            logger.warning("stock_pool配置不存在，返回未过滤的股票列表")
+            return codes
+
+        filtered_codes = []
+        logger.debug(f"应用股票池过滤规则，候选股票: {len(codes)} 只")
+
+        for code in codes:
+            # 1. 检查ST状态 (使用历史数据，避免前视偏差)
+            if config.get('exclude_st', True):
+                if self.is_st_stock(code, date):
+                    logger.debug(f"排除ST股票: {code}")
+                    continue
+
+            # 2. 检查上市天数
+            if 'min_list_days' in config and config['min_list_days'] > 0:
+                list_date = self._get_stock_list_date(code)
+                if list_date is not None:
+                    trading_days = self._count_trading_days_between(list_date, date)
+                    if trading_days < config['min_list_days']:
+                        logger.debug(f"排除上市不足{config['min_list_days']}天: {code} (仅{trading_days}天)")
+                        continue
+
+            # 3. 检查流动性 (使用最近N日数据)
+            if not self._check_liquidity_filter(code, date, config):
+                logger.debug(f"排除流动性不足: {code}")
+                continue
+
+            filtered_codes.append(code)
+
+        logger.debug(f"股票池过滤完成: {len(codes)} → {len(filtered_codes)} 只")
+        return filtered_codes
+
+    def _check_liquidity_filter(self, code: str, date: pd.Timestamp, config: dict) -> bool:
+        """
+        检查流动性过滤条件
+
+        Args:
+            code: 股票代码
+            date: 日期
+            config: 股票池配置
+
+        Returns:
+            是否满足流动性条件
+        """
+        # 加载该股票最近N日数据
+        try:
+            df = self.load_daily_price(code)
+            df['date'] = pd.to_datetime(df['date'])
+
+            # 筛选到指定日期为止的最近N日数据
+            recent_data = df[df['date'] <= date].tail(20)
+            if len(recent_data) < 10:  # 数据不足10日，跳过
+                logger.debug(f"{code} 历史数据不足10日，跳过流动性过滤")
+                return True  # 保守策略：数据不足时通过
+
+            # 检查日均成交额
+            if 'min_avg_amount' in config and config['min_avg_amount'] > 0:
+                if 'amount' in recent_data.columns:
+                    avg_amount = recent_data['amount'].mean()
+                    min_amount = config['min_avg_amount'] * 10000  # 转换为元
+                    if avg_amount < min_amount:
+                        logger.debug(f"{code} 日均成交额不足: {avg_amount/10000:.1f}万 < {config['min_avg_amount']}万")
+                        return False
+
+            # 检查日均换手率
+            if 'min_avg_turnover' in config and config['min_avg_turnover'] > 0:
+                if 'turnover' in recent_data.columns:
+                    avg_turnover = recent_data['turnover'].mean()
+                    min_turnover = config['min_avg_turnover']
+                    # 自动转换：如果是百分比形式(>1)则转换为小数
+                    if avg_turnover > 1.0 and min_turnover <= 1.0:
+                        avg_turnover = avg_turnover / 100.0
+                    if avg_turnover < min_turnover:
+                        logger.debug(f"{code} 日均换手率不足: {avg_turnover*100:.2f}% < {config['min_avg_turnover']}%")
+                        return False
+
+            return True
+        except Exception as e:
+            logger.debug(f"{code} 流动性检查失败: {e}，默认通过")
+            return True  # 异常时保守通过
+
+    def _count_trading_days_between(self, start_date: pd.Timestamp, end_date: pd.Timestamp) -> int:
+        """
+        计算两个日期之间的交易日天数
+
+        Args:
+            start_date: 开始日期
+            end_date: 结束日期
+
+        Returns:
+            交易日天数
+        """
+        calendar = self.trade_calendar
+        # 计算在交易日历中的天数
+        mask = (calendar >= start_date) & (calendar <= end_date)
+        return mask.sum()
+
+    def _get_stock_list_date(self, code: str) -> Optional[pd.Timestamp]:
+        """
+        获取股票上市日期
+
+        Args:
+            code: 股票代码
+
+        Returns:
+            上市日期或None（如果无法获取）
+        """
+        try:
+            stock_list = self.load_stock_list()
+            if 'code' in stock_list.columns and 'list_date' in stock_list.columns:
+                row = stock_list[stock_list['code'] == code]
+                if len(row) > 0:
+                    list_date_str = row.iloc[0]['list_date']
+                    if pd.notna(list_date_str):
+                        return pd.to_datetime(list_date_str)
+        except Exception as e:
+            logger.debug(f"获取 {code} 上市日期失败: {e}")
+
+        return None
+
+    def validate_stock_pool_config(self) -> bool:
+        """
+        验证stock_pool配置的完整性和有效性
+
+        Returns:
+            配置是否有效
+        """
+        config = self.config.get('stock_pool', {})
+
+        # 检查必要字段
+        required_fields = ['exclude_st', 'min_avg_amount', 'min_avg_turnover']
+        for field in required_fields:
+            if field not in config:
+                logger.error(f"stock_pool配置缺少必要字段: {field}")
+                return False
+
+        # 验证数值范围
+        if config.get('min_list_days', 0) < 0:
+            logger.error("min_list_days必须为非负数")
+            return False
+
+        if config.get('min_avg_amount', 0) < 0:
+            logger.error("min_avg_amount必须为非负数")
+            return False
+
+        if config.get('min_avg_turnover', 0) < 0:
+            logger.error("min_avg_turnover必须为非负数")
+            return False
+
+        logger.info("stock_pool配置验证通过")
+        return True
 
     def load_index_data(self, symbol: str = 'sh000300') -> pd.DataFrame:
         """Load index data (strict)."""
