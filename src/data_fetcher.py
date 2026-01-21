@@ -295,17 +295,43 @@ class DataFetcher:
     def _normalize_codes(self, codes: List[str]) -> List[str]:
         return [self._normalize_code(code) for code in codes]
 
-    def _load_failed_codes(self) -> set:
-        if self._failed_codes_cache is not None:
+    def _load_failed_codes(self, data_type: str = None) -> set:
+        """
+        加载下载失败的股票代码列表
+
+        Args:
+            data_type: 数据类型，可选值:
+                - None: 加载所有类型的失败列表（用于股票池过滤）
+                - 'daily_price': 只加载日K线失败列表
+                - 'financial': 只加载财务数据失败列表
+                - 'moneyflow': 只加载资金流向失败列表
+
+        Returns:
+            失败股票代码集合
+        """
+        # 如果指定了数据类型，不使用缓存（因为缓存是全部类型的合集）
+        if data_type is None and self._failed_codes_cache is not None:
             return self._failed_codes_cache
+
         failed = set()
         adjust = self.config['data_fetch']['adjust']
         adjust_dir = adjust if adjust else 'none'
-        candidate_paths = [
-            self.raw_path / "daily_price" / adjust_dir / "_failed_codes.txt",
-            self.raw_path / "financial" / "_failed_codes.txt",
-            self.raw_path / "moneyflow" / "_failed_codes.txt",
-        ]
+
+        # 根据数据类型选择要加载的失败列表
+        if data_type == 'daily_price':
+            candidate_paths = [self.raw_path / "daily_price" / adjust_dir / "_failed_codes.txt"]
+        elif data_type == 'financial':
+            candidate_paths = [self.raw_path / "financial" / "_failed_codes.txt"]
+        elif data_type == 'moneyflow':
+            candidate_paths = [self.raw_path / "moneyflow" / "_failed_codes.txt"]
+        else:
+            # 加载所有类型
+            candidate_paths = [
+                self.raw_path / "daily_price" / adjust_dir / "_failed_codes.txt",
+                self.raw_path / "financial" / "_failed_codes.txt",
+                self.raw_path / "moneyflow" / "_failed_codes.txt",
+            ]
+
         for path in candidate_paths:
             if not path.exists():
                 continue
@@ -321,7 +347,10 @@ class DataFetcher:
                             continue
             except Exception as e:
                 logger.warning(f"加载失败列表失败: {path} {e}")
-        self._failed_codes_cache = failed
+
+        # 只有加载全部类型时才缓存
+        if data_type is None:
+            self._failed_codes_cache = failed
         return failed
 
     def _load_delisted_codes(self) -> set:
@@ -552,7 +581,7 @@ class DataFetcher:
 
     def filter_stock_pool(self, stock_list: pd.DataFrame) -> pd.DataFrame:
         """
-        过滤股票池
+        过滤股票池（完整过滤，包含流动性筛选）
 
         Args:
             stock_list: 原始股票列表
@@ -603,6 +632,48 @@ class DataFetcher:
             logger.info(f"过滤低换手率后剩余: {len(df)} 只")
 
         logger.info(f"股票池从 {original_count} 过滤到 {len(df)}")
+        return df
+
+    def filter_stock_pool_for_download(self, stock_list: pd.DataFrame) -> pd.DataFrame:
+        """
+        下载阶段的股票池过滤（只做基本过滤，不排除历史失败的股票）
+
+        下载完整数据，流动性过滤在选股阶段进行，这样可以：
+        1. 保留科创板、创业板等所有板块的数据
+        2. 在选股时根据需要灵活调整流动性要求
+        3. 不排除历史失败的股票，给它们重试的机会
+
+        Args:
+            stock_list: 原始股票列表
+
+        Returns:
+            过滤后的股票列表
+        """
+        config = self.config['stock_pool']
+        df = stock_list.copy()
+        original_count = len(df)
+
+        # 排除ST股票
+        if config.get('exclude_st', True):
+            df = df[~df['name'].str.contains('ST|\\*ST', na=False)]
+            logger.info(f"排除ST后剩余: {len(df)} 只")
+
+        # 排除退市股票
+        if config.get('exclude_delisted', True):
+            delisted_codes = self._load_delisted_codes()
+            if delisted_codes:
+                df = df[~df['code'].isin(delisted_codes)]
+                logger.info(f"排除退市股票后剩余: {len(df)} 只")
+            else:
+                df = df[~df['name'].str.contains('退', na=False)]
+                logger.info(f"排除含退市标识后剩余: {len(df)} 只")
+
+        # 排除北交所股票 (代码以8、4、92开头)
+        df = df[~df['code'].str.startswith(('8', '4', '92'))]
+        logger.info(f"排除北交所后剩余: {len(df)} 只")
+
+        # 注意：不做流动性过滤（成交额、换手率），保留完整数据
+        logger.info(f"下载股票池从 {original_count} 过滤到 {len(df)} (不含流动性过滤)")
         return df
 
     def fetch_daily_price(self, code: str, start_date: str = None,
@@ -749,10 +820,27 @@ class DataFetcher:
                 if c not in existing_files and (c not in known_failed or not skip_failed)
             ]
             if update_existing:
-                to_update = [c for c in codes if c in existing_files]
+                # 优化：先批量检查哪些文件真正需要更新
+                logger.info("检查需要更新的文件...")
+                candidates = [c for c in codes if c in existing_files]
+                for code in tqdm(candidates, desc="检查更新状态", leave=False):
+                    save_path = save_dir / f"{code}.parquet"
+                    try:
+                        date_df = load_parquet(save_path, columns=['date'])
+                        if date_df is None or len(date_df) == 0 or 'date' not in date_df.columns:
+                            to_update.append(code)
+                            continue
+                        date_df['date'] = pd.to_datetime(date_df['date'], errors='coerce')
+                        max_date = date_df['date'].max()
+                        if pd.isna(max_date) or (pd.notna(end_ts) and max_date < end_ts):
+                            to_update.append(code)
+                        else:
+                            up_to_date_count += 1
+                    except Exception:
+                        to_update.append(code)
             logger.info(
                 f"日K线: 已存在 {skip_downloaded} 个, 已知失败 {skip_failed_count} 个, "
-                f"待下载 {len(to_download)} 个, 待更新 {len(to_update)} 个"
+                f"待下载 {len(to_download)} 个, 需更新 {len(to_update)} 个, 已是最新 {up_to_date_count} 个"
             )
         else:
             to_download = [c for c in codes if (c not in known_failed or not skip_failed)]
@@ -791,14 +879,11 @@ class DataFetcher:
                         raise RuntimeError("existing daily price missing date column")
                     date_df['date'] = pd.to_datetime(date_df['date'], errors='coerce')
                     max_date = date_df['date'].max()
-                    if pd.isna(max_date) or (pd.notna(end_ts) and max_date >= end_ts):
-                        up_to_date_count += 1
-                        continue
 
                     update_start = (max_date + pd.Timedelta(days=1)).strftime('%Y%m%d')
                     new_df = self.fetch_daily_price(code, start_date=update_start, end_date=end_date, adjust=adjust)
                     if new_df is None or len(new_df) == 0:
-                        up_to_date_count += 1
+                        # 无新数据，可能是非交易日或已是最新
                         continue
 
                     old_df = load_parquet(save_path)
@@ -2164,7 +2249,8 @@ class DataFetcher:
         # 1. 获取股票列表
         if codes is None:
             stock_list = self.get_stock_list()
-            stock_list = self.filter_stock_pool(stock_list)
+            # 只排除ST、退市、北交所，不做流动性过滤（流动性过滤在选股阶段进行）
+            stock_list = self.filter_stock_pool_for_download(stock_list)
             codes = stock_list['code'].tolist()
 
             # 保存股票列表

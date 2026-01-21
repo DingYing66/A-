@@ -20,6 +20,7 @@ from .utils import (
 from .data_processor import DataProcessor
 from .factor_engine import FactorEngine
 from .scorer import FactorScorer, ConstrainedSelector, CostAwareOptimizer
+from .adaptive_weights import AdaptiveWeightManager
 
 # Bug修复: 使用统一的策略接口
 try:
@@ -66,6 +67,10 @@ class Backtester:
         else:
             self.cost_aware_optimizer = None
 
+        # 自适应权重管理器
+        self.adaptive_weight_manager = AdaptiveWeightManager(self.config)
+        self.use_adaptive_weights = self.config.get('adaptive_weights', {}).get('enabled', False)
+
         # 回测参数
         self.rebalance_freq = self.bt_config['rebalance_freq']
         self.top_n = self.bt_config['top_n']
@@ -105,7 +110,10 @@ class Backtester:
 
     def _is_suspended(self, code: str, date: pd.Timestamp) -> bool:
         """
-        检查股票是否停牌
+        检查股票是否停牌（当日无交易数据）
+
+        通过检查该股票在指定日期是否有交易记录来判断停牌状态。
+        如果当日没有交易数据，则视为停牌。
 
         Args:
             code: 股票代码
@@ -114,8 +122,14 @@ class Backtester:
         Returns:
             是否停牌
         """
-        self.processor.get_price_on_date(code, date)
-        return False
+        try:
+            df = self.processor.load_daily_price(code)
+            df['date'] = pd.to_datetime(df['date'])
+            # 检查该日期是否在交易记录中
+            return date not in df['date'].values
+        except Exception:
+            # 数据缺失视为停牌
+            return True
 
     def _compute_position_ratio(self, factor_df: pd.DataFrame) -> float:
         """
@@ -646,9 +660,18 @@ class Backtester:
 
         # 默认打分函数
         if score_func is None and mode == 'score':
+            # 使用自适应权重（如果启用）
+            use_adaptive = self.use_adaptive_weights
+
             def default_score_func(factor_df):
-                return self.scorer.select_top_stocks(factor_df, n=self.top_n * 2)  # 多选一倍用于递补
+                return self.scorer.select_top_stocks(
+                    factor_df, n=self.top_n * 2,
+                    use_adaptive=use_adaptive
+                )  # 多选一倍用于递补
             score_func = default_score_func
+
+            if use_adaptive:
+                logger.info("已启用自适应权重")
 
         # ========== P4-1: 两阶段架构 ==========
         # 阶段一(离线): 只预计算分数，不应用约束
@@ -667,8 +690,8 @@ class Backtester:
             factor_df = self.factor_engine.load_factor_data(date_str)
 
             if len(factor_df) == 0:
-                # 缓存不存在，计算因子
-                factor_df = self.factor_engine.compute_factor_cross_section(rb_date)
+                # 缓存不存在，计算因子（回测不需要前向收益率）
+                factor_df = self.factor_engine.compute_factor_cross_section(rb_date, add_forward_return=False)
                 if len(factor_df) > 0:
                     # 标准化并保存到缓存
                     factor_df = self.factor_engine.standardize_factors(factor_df)
@@ -690,6 +713,11 @@ class Backtester:
                 if len(scored_df) == 0:
                     raise RuntimeError(f"score result empty for {rb_date.date()}")
                 score_cache[rb_date] = scored_df
+
+                # 记录自适应权重信息
+                if self.use_adaptive_weights:
+                    weights, status = self.adaptive_weight_manager.get_weights_from_factor_df(factor_df)
+                    logger.info(f"{rb_date.date()}: 市场状态={status}, 权重={weights}")
 
                 # 记录日志
                 if position_ratio < 1.0:

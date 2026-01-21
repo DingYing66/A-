@@ -61,24 +61,68 @@ factors:
   # 深度学习因子计算频率: daily-每天, weekly-每周, biweekly-双周
   dl_compute_freq: "daily"
 
-# 因子权重配置 (改进版: 加入赚钱效应因子)
+# 因子权重配置
 weights:
-  quality: 0.30      # 质量因子权重 (降低)
-  valuation: 0.15    # 估值因子权重
-  momentum: 0.15     # 动量因子权重 (大幅降低，熊市容易失效)
-  flow: 0.15         # 资金因子权重
-  sentiment: 0.25    # 新增: 赚钱效应/情绪因子权重 (核心改进)
+  quality: 0.30      # 维持，核心防御因子
+  valuation: 0.20    # +5%，增加安全边际
+  momentum: 0.15     # 维持
+  flow: 0.20         # +5%，北向资金信号强
+  sentiment: 0.15    # -10%，降低与动量/资金的重叠
+
+# 备选方案（注释保留）
+# 方案二：保守型（熊市/震荡市）
+# weights:
+#   quality: 0.35
+#   valuation: 0.25
+#   momentum: 0.10
+#   flow: 0.15
+#   sentiment: 0.15
+
+# 方案三：进取型（牛市）
+# weights:
+#   quality: 0.20
+#   valuation: 0.10
+#   momentum: 0.25
+#   flow: 0.20
+#   sentiment: 0.25
+
+# 自适应权重配置
+adaptive_weights:
+  enabled: true  # 启用自适应权重（默认关闭，保持向后兼容）
+
+  # 牛市权重（进取型）
+  bull_weights:
+    quality: 0.20
+    valuation: 0.10
+    momentum: 0.25
+    flow: 0.20
+    sentiment: 0.25
+
+  # 熊市权重（保守型）
+  bear_weights:
+    quality: 0.35
+    valuation: 0.25
+    momentum: 0.10
+    flow: 0.15
+    sentiment: 0.15
+
+  # 市场状态判定阈值
+  thresholds:
+    bull_trend: 0.02       # 趋势 > 2% 判定为牛市
+    bear_trend: -0.02      # 趋势 < -2% 判定为熊市
+    bull_breadth: 0.50     # 广度 > 50% 支持牛市
+    bear_breadth: 0.40     # 广度 < 40% 支持熊市
 
 # 回测配置
 backtest:
   # 调仓频率: weekly-周频, biweekly-双周频, monthly-月频
   rebalance_freq: "biweekly"
   # 选股数量
-  top_n: 50
+  top_n: 20
   # 单票最大仓位
-  max_position: 0.05
+  max_position: 0.5
   # 佣金费率
-  commission: 0.001
+  commission: 0.00025
   # 滑点
   slippage: 0.001
   # 基准指数代码
@@ -86,7 +130,7 @@ backtest:
   # 回测起始日期
   backtest_start: "20200101"
   # 回测结束日期
-  backtest_end: "20260114"
+  backtest_end: "20260120"
 
 # 机器学习配置 (改进版)
 ml:
@@ -155,7 +199,7 @@ liquidity:
   # 换手率计算窗口(交易日)
   avg_turnover_window: 20
   # 最小日均成交额阈值(元) - 低于此值视为流动性不足
-  min_amount_threshold: 10000000
+  min_amount_threshold: 100000
   # P6-3修复: 最小日均换手率阈值
   # 使用小数形式: 0.005 = 0.5%, 0.01 = 1%
   # 数据格式: 如果原始数据是百分数(如2.9表示2.9%), 代码会自动转换

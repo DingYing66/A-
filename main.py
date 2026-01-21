@@ -24,6 +24,7 @@ from src.scorer import FactorScorer
 from src.ml_model import MLModel, EnsembleModel
 from src.backtester import Backtester, WalkForwardBacktester
 from src.performance import PerformanceAnalyzer
+from src.adaptive_weights import AdaptiveWeightManager
 from src.utils import load_config, setup_logger, ensure_dir, get_project_root
 
 logger = setup_logger('main')
@@ -133,6 +134,10 @@ def generate_signal(args):
     factor_engine = FactorEngine(config)
     scorer = FactorScorer(config)
 
+    # 自适应权重管理器
+    adaptive_manager = AdaptiveWeightManager(config)
+    use_adaptive = config.get('adaptive_weights', {}).get('enabled', False)
+
     # 使用最新数据
     processor = DataProcessor(config)
     calendar = processor.trade_calendar
@@ -147,8 +152,8 @@ def generate_signal(args):
     latest_date = recent_dates[-1]
     logger.info(f"信号日期: {latest_date.date()}")
 
-    # 计算因子
-    factor_df = factor_engine.compute_factor_cross_section(latest_date)
+    # 计算因子（生成信号不需要前向收益率）
+    factor_df = factor_engine.compute_factor_cross_section(latest_date, add_forward_return=False)
     if len(factor_df) == 0:
         logger.error("因子计算失败")
         return
@@ -159,6 +164,15 @@ def generate_signal(args):
     market_trend = factor_df['market_trend'].iloc[0] if 'market_trend' in factor_df.columns else 0
     market_breadth = factor_df['market_breadth'].iloc[0] if 'market_breadth' in factor_df.columns else 0.5
     market_volatility = factor_df['market_volatility'].iloc[0] if 'market_volatility' in factor_df.columns else 0.2
+
+    # 获取自适应权重和市场状态
+    if use_adaptive:
+        current_weights, market_status = adaptive_manager.get_weights_from_factor_df(factor_df)
+        regime_info = adaptive_manager.get_regime_info(market_trend, market_breadth, market_volatility)
+    else:
+        current_weights = config['weights']
+        market_status = "均衡型(默认)"
+        regime_info = None
 
     # 计算建议仓位比例
     position_ratio = 1.0
@@ -189,7 +203,8 @@ def generate_signal(args):
         ml.load_model(args.model_path)
         selected = ml.select_stocks_ml(factor_df, n=top_n)
     else:
-        selected = scorer.select_top_stocks(factor_df, n=top_n)
+        # 使用自适应权重选股
+        selected = scorer.select_top_stocks(factor_df, n=top_n, use_adaptive=use_adaptive)
 
     # ========== 计算权重 ==========
     # 基础等权
@@ -221,6 +236,13 @@ def generate_signal(args):
     print(f"  市场广度(赚钱效应): {market_breadth:.1%}")
     print(f"  市场波动率: {market_volatility:.1%}")
     print(f"  风险等级: {risk_level}")
+    print(f"  市场状态: {market_status}")
+
+    # 自适应权重信息
+    print(f"\n【因子权重配置】")
+    print(f"  自适应权重: {'已启用' if use_adaptive else '未启用'}")
+    for factor, weight in current_weights.items():
+        print(f"    {factor}: {weight:.0%}")
 
     # 仓位建议
     print(f"\n【仓位建议】")

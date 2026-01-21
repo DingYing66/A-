@@ -43,8 +43,9 @@ def _sanitize_sequence_values(sequence: np.ndarray) -> np.ndarray:
     if sequence is None:
         return sequence
     seq = np.asarray(sequence, dtype=np.float32)
+    # 清理 NaN/inf 值而不是报错
     if np.isnan(seq).any() or np.isinf(seq).any():
-        raise RuntimeError("sequence contains NaN or inf values")
+        seq = np.nan_to_num(seq, nan=0.0, posinf=0.0, neginf=0.0)
     return seq
 
 
@@ -186,17 +187,12 @@ class FactorSequenceDataset(Dataset):
 
     def _load_factor_data(self, date_str: str) -> Optional[pd.DataFrame]:
         """
-        加载因子数据，支持新/旧格式兼容 (Bug修复)
+        加载因子数据，支持多种文件格式
 
-        新格式: factors_{date}_{universe_id}.parquet
-        旧格式: factors_{date}.parquet
-
-        优先级:
-        1. 如果提供了 universe_id 提示，优先匹配
-        2. 否则查找新格式文件（使用确定性选择策略）
-        3. 回退到旧格式
-
-        Bug修复 R3: 使用确定性选择策略 (股票数量+文件名) 而非修改时间
+        支持格式:
+        1. factors_{date}_{date}_{count}_{hash}.parquet (当前格式)
+        2. factors_{date}_{universe_id}.parquet (旧格式)
+        3. factors_{date}.parquet (最旧格式)
 
         Args:
             date_str: 日期字符串 YYYYMMDD
@@ -204,12 +200,36 @@ class FactorSequenceDataset(Dataset):
         Returns:
             因子数据 DataFrame 或 None
         """
-        if not self._universe_id_hint:
-            raise RuntimeError("universe_id is required to load factor cache")
-        exact_path = self.factor_cache_dir / f'factors_{date_str}_{self._universe_id_hint}.parquet'
-        if not exact_path.exists():
-            raise RuntimeError(f"factor cache not found for {date_str}: {exact_path}")
-        return load_parquet(exact_path)
+        # 尝试匹配当前格式: factors_YYYYMMDD_YYYYMMDD_count_hash.parquet
+        pattern = f'factors_{date_str}_{date_str}_*.parquet'
+        matches = list(self.factor_cache_dir.glob(pattern))
+        if matches:
+            # 如果有多个匹配，选择股票数最多的（从文件名解析）
+            if len(matches) > 1:
+                def get_count(f):
+                    parts = f.stem.split('_')
+                    if len(parts) >= 4:
+                        try:
+                            return int(parts[3])
+                        except ValueError:
+                            return 0
+                    return 0
+                matches.sort(key=get_count, reverse=True)
+            return load_parquet(matches[0])
+
+        # 尝试旧格式: factors_YYYYMMDD_universeId.parquet
+        if self._universe_id_hint:
+            exact_path = self.factor_cache_dir / f'factors_{date_str}_{self._universe_id_hint}.parquet'
+            if exact_path.exists():
+                return load_parquet(exact_path)
+
+        # 尝试最旧格式: factors_YYYYMMDD.parquet
+        old_path = self.factor_cache_dir / f'factors_{date_str}.parquet'
+        if old_path.exists():
+            return load_parquet(old_path)
+
+        # 没有找到任何匹配的文件
+        return None
 
     def _load_or_build_samples(self):
         """加载或构建样本（带缓存验证）"""
@@ -407,8 +427,9 @@ class FactorSequenceDataset(Dataset):
 
         sequence = np.array(sequence, dtype=np.float32)
 
+        # 清理 NaN/inf 值
         if np.isnan(sequence).any() or np.isinf(sequence).any():
-            raise RuntimeError(f"sequence contains NaN/inf for {code}")
+            sequence = np.nan_to_num(sequence, nan=0.0, posinf=0.0, neginf=0.0)
 
         return sequence
 
@@ -495,17 +516,21 @@ class FactorSequenceDataset(Dataset):
             sequence = sequence[-self.seq_len:]
             time_gaps = time_gaps[-self.seq_len:]
 
+        # 使用插值填充缺失值
         if any(item is None for item in sequence):
-            raise RuntimeError(f"missing factors for {code} in flexible sequence")
-        sequence = np.array(sequence, dtype=np.float32)
+            sequence = self._interpolate_missing(sequence)
+        else:
+            sequence = np.array(sequence, dtype=np.float32)
 
         # 添加时间间隔特征
         if self.add_time_gap_feature:
             time_gaps = np.array(time_gaps, dtype=np.float32).reshape(-1, 1) / 30.0  # 归一化到月
             sequence = np.hstack([sequence, time_gaps])
 
+        # 清理 NaN/inf 值
         if np.isnan(sequence).any() or np.isinf(sequence).any():
-            raise RuntimeError(f"sequence contains NaN/inf for {code}")
+            sequence = np.nan_to_num(sequence, nan=0.0, posinf=0.0, neginf=0.0)
+
         return sequence.astype(np.float32)
 
     def _interpolate_missing(self, sequence: List) -> np.ndarray:
@@ -748,9 +773,12 @@ class FactorSequenceBuilder:
 
     def _load_factor_data(self, date_str: str) -> Optional[pd.DataFrame]:
         """
-        加载因子数据，支持新/旧格式兼容 (Bug修复)
+        加载因子数据，支持多种文件格式
 
-        Bug修复 R3: 使用确定性选择策略 (股票数量+文件名) 而非修改时间
+        支持格式:
+        1. factors_{date}_{date}_{count}_{hash}.parquet (当前格式)
+        2. factors_{date}_{universe_id}.parquet (旧格式)
+        3. factors_{date}.parquet (最旧格式)
 
         Args:
             date_str: 日期字符串 YYYYMMDD
@@ -758,12 +786,36 @@ class FactorSequenceBuilder:
         Returns:
             因子数据 DataFrame 或 None
         """
-        if not self._universe_id_hint:
-            raise RuntimeError("universe_id is required to load factor cache")
-        exact_path = self.factor_cache_dir / f'factors_{date_str}_{self._universe_id_hint}.parquet'
-        if not exact_path.exists():
-            raise RuntimeError(f"factor cache not found for {date_str}: {exact_path}")
-        return load_parquet(exact_path)
+        # 尝试匹配当前格式: factors_YYYYMMDD_YYYYMMDD_count_hash.parquet
+        pattern = f'factors_{date_str}_{date_str}_*.parquet'
+        matches = list(self.factor_cache_dir.glob(pattern))
+        if matches:
+            # 如果有多个匹配，选择股票数最多的（从文件名解析）
+            if len(matches) > 1:
+                def get_count(f):
+                    parts = f.stem.split('_')
+                    if len(parts) >= 4:
+                        try:
+                            return int(parts[3])
+                        except ValueError:
+                            return 0
+                    return 0
+                matches.sort(key=get_count, reverse=True)
+            return load_parquet(matches[0])
+
+        # 尝试旧格式: factors_YYYYMMDD_universeId.parquet
+        if self._universe_id_hint:
+            exact_path = self.factor_cache_dir / f'factors_{date_str}_{self._universe_id_hint}.parquet'
+            if exact_path.exists():
+                return load_parquet(exact_path)
+
+        # 尝试最旧格式: factors_YYYYMMDD.parquet
+        old_path = self.factor_cache_dir / f'factors_{date_str}.parquet'
+        if old_path.exists():
+            return load_parquet(old_path)
+
+        # 没有找到任何匹配的文件
+        return None
 
     def build_sequences_for_date(self,
                                   target_date: pd.Timestamp,

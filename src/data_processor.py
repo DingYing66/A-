@@ -71,10 +71,8 @@ class DataProcessor:
         if len(parquet_files) == 0:
             raise RuntimeError(f"未找到日K数据文件 (路径: {price_dir})，无法构建交易日历")
 
-        # 取样几个文件构建日历（节省时间）
-        sample_files = parquet_files[:min(100, len(parquet_files))]
-
-        for f in sample_files:
+        # 扫描所有文件构建完整日历（移除100文件限制）
+        for f in tqdm(parquet_files, desc="构建交易日历"):
             try:
                 df = load_parquet(f, columns=['date'])
                 all_dates.update(pd.to_datetime(df['date']).tolist())
@@ -160,28 +158,44 @@ class DataProcessor:
             raise RuntimeError('no financial data available before trade dates')
         return pd.DataFrame(aligned_data)
 
-    def get_price_on_date(self, code: str, date: pd.Timestamp) -> Optional[dict]:
-        """Get price record for a specific date (strict)."""
+    def get_price_on_date(self, code: str, date: pd.Timestamp,
+                          strict: bool = False) -> Optional[dict]:
+        """
+        Get price record for a specific date.
+
+        Args:
+            code: 股票代码
+            date: 日期
+            strict: 严格模式。如果为True，当日无数据时返回None而非前向填充；
+                   如果为False（默认），使用前向填充获取最近有效价格
+
+        Returns:
+            价格数据字典，严格模式下无数据时返回None
+        """
         df = self.load_daily_price(code)
         df['date'] = pd.to_datetime(df['date'])
         row = df[df['date'] == date]
         if len(row) == 0:
-            raise RuntimeError(f"price not found for {code} on {date}")
+            if strict:
+                # 严格模式：当日无数据直接返回None，不做前向填充
+                return None
+            # 非严格模式：尝试获取最近的有效价格（向前查找）
+            df_sorted = df[df['date'] <= date].sort_values('date', ascending=False)
+            if len(df_sorted) == 0:
+                raise RuntimeError(f"price not found for {code} on {date}")
+            return df_sorted.iloc[0].to_dict()
         return row.iloc[0].to_dict()
 
     def get_prev_close(self, code: str, date: pd.Timestamp) -> Optional[float]:
-        """Get previous close (strict)."""
+        """Get previous close, with fallback for missing dates."""
         df = self.load_daily_price(code)
         df['date'] = pd.to_datetime(df['date'])
         df = df.sort_values('date')
-        idx = df[df['date'] == date].index
-        if len(idx) == 0:
-            raise RuntimeError(f"price not found for {code} on {date}")
-        current_pos = df.index.get_loc(idx[0])
-        if current_pos == 0:
+        # 找到小于当前日期的最近交易日
+        df_before = df[df['date'] < date]
+        if len(df_before) == 0:
             raise RuntimeError(f"no previous close for {code} on {date}")
-        prev_idx = df.index[current_pos - 1]
-        return df.loc[prev_idx, 'close']
+        return df_before.iloc[-1]['close']
 
     def is_st_stock(self, code: str, date: pd.Timestamp = None) -> Optional[bool]:
         """Strict ST check using historical data only."""

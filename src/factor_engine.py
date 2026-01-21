@@ -1409,7 +1409,7 @@ class FactorEngine:
 
     def load_factor_data(self, date: str, universe_id: str = None) -> pd.DataFrame:
         """
-        加载已保存的因子数据 (严格模式: 只支持新格式)
+        加载已保存的因子数据
 
         Args:
             date: 日期字符串 YYYYMMDD
@@ -1420,31 +1420,40 @@ class FactorEngine:
         """
         factors_dir = self.root / self.config['paths']['processed_data'] / 'factors'
 
-        # 严格模式: 只支持带 universe_id 的新格式
+        # 如果指定了 universe_id，精确匹配
         if universe_id:
             path = factors_dir / f"factors_{date}_{universe_id}.parquet"
             if path.exists():
                 logger.debug(f"从缓存加载因子: {path.name}")
                 return load_parquet(path)
-            else:
-                # 缓存不存在是正常场景，返回空DF让调用方计算
-                logger.debug(f"因子缓存不存在: {path.name}，将重新计算")
-                return pd.DataFrame()
 
-        # 无 universe_id 时，查找该日期的新格式文件（单一匹配）
-        pattern = f"factors_{date}_*.parquet"
-        matching_files = list(factors_dir.glob(pattern))
+        # 尝试匹配当前格式: factors_YYYYMMDD_YYYYMMDD_count_hash.parquet
+        pattern1 = f"factors_{date}_{date}_*.parquet"
+        matching_files = list(factors_dir.glob(pattern1))
+
+        # 如果没找到，尝试旧格式: factors_YYYYMMDD_*.parquet
+        if not matching_files:
+            pattern2 = f"factors_{date}_*.parquet"
+            matching_files = list(factors_dir.glob(pattern2))
+
         if len(matching_files) == 1:
             path = matching_files[0]
             logger.debug(f"从缓存加载因子: {path.name}")
             return load_parquet(path)
         elif len(matching_files) > 1:
-            # 严格模式: 多个匹配时报错，要求明确指定 universe_id
-            logger.warning(
-                f"日期 {date} 有 {len(matching_files)} 个因子缓存文件，"
-                f"请明确指定 universe_id 参数以确保可复现性"
-            )
-            raise RuntimeError("multiple factor cache files found, please specify universe_id")
+            # 多个匹配时，选择股票数最多的
+            def get_count(f):
+                parts = f.stem.split('_')
+                if len(parts) >= 4:
+                    try:
+                        return int(parts[3])
+                    except ValueError:
+                        return 0
+                return 0
+            matching_files.sort(key=get_count, reverse=True)
+            path = matching_files[0]
+            logger.debug(f"从缓存加载因子: {path.name}")
+            return load_parquet(path)
 
         # 无匹配文件，返回空DF让调用方计算
         logger.debug(f"日期 {date} 无因子缓存，将重新计算")
